@@ -329,6 +329,7 @@ class StreamProcessor extends AudioWorkletProcessor {
             float32Array[i] = int16Array[i] / 0x8000; // Convert Int16 to Float32
           }
           this.writeData(float32Array, payload.trackId);
+
         } else if (
           payload.event === 'offset' ||
           payload.event === 'interrupt'
@@ -359,6 +360,14 @@ class StreamProcessor extends AudioWorkletProcessor {
       buffer[offset++] = float32Array[i];
       if (offset >= buffer.length) {
         this.outputBuffers.push(this.write);
+
+        // post audio playback timestamp
+        this.port.postMessage({
+          event: 'audio',
+          data: this.write.buffer,
+          timestamp_ms: Date.now()
+        });
+
         this.write = { buffer: new Float32Array(this.bufferLength), trackId };
         buffer = this.write.buffer;
         offset = 0;
@@ -419,13 +428,16 @@ registerProcessor('stream_processor', StreamProcessor);
       this.analyser = null;
       this.trackSampleOffsets = {};
       this.interruptedTrackIds = {};
+      this._audioProcessor = () => {
+      };
     }
     /**
      * Connects the audio context and enables output to speakers
      * @returns {Promise<true>}
      */
-    async connect() {
+    async connect(onAudioDataSent) {
       this.context = new AudioContext({ sampleRate: this.sampleRate });
+      this._audioProcessor = onAudioDataSent;
       if (this.context.state === "suspended") {
         await this.context.resume();
       }
@@ -470,8 +482,10 @@ registerProcessor('stream_processor', StreamProcessor);
       const streamNode = new AudioWorkletNode(this.context, "stream_processor");
       streamNode.connect(this.context.destination);
       streamNode.port.onmessage = (e) => {
-        const { event } = e.data;
-        if (event === "stop") {
+        const { event, data, timestamp_ms } = e.data;
+        if (event === "audio") {
+          this._audioProcessor(data, timestamp_ms);
+        } else if (event === "stop") {
           streamNode.disconnect();
           this.stream = null;
         } else if (event === "offset") {
@@ -694,6 +708,7 @@ class AudioProcessor extends AudioWorkletProcessor {
   }
 
   sendChunk(chunk) {
+    const timestamp_ms = Date.now();
     const channels = this.readChannelData([chunk]);
     const { float32Array, meanValues } = this.formatAudioData(channels);
     const rawAudioData = this.floatTo16BitPCM(float32Array);
@@ -704,10 +719,11 @@ class AudioProcessor extends AudioWorkletProcessor {
         mono: monoAudioData,
         raw: rawAudioData,
       },
+      timestamp_ms,
     });
   }
 
-  process(inputList, outputList, parameters) {
+  process(inputList, outputList, parameters) {    
     // Copy input to output (e.g. speakers)
     // Note that this creates choppy sounds with Mac products
     const sourceLimit = Math.min(inputList.length, outputList.length);
@@ -1052,25 +1068,14 @@ registerProcessor('audio_processor', AudioProcessor);
       }
       const processor = new AudioWorkletNode(context, "audio_processor");
       processor.port.onmessage = (e) => {
-        const { event, id, data } = e.data;
+        const { event, id, data, timestamp_ms } = e.data;
         if (event === "receipt") {
           this.eventReceipts[id] = data;
         } else if (event === "chunk") {
           if (this._chunkProcessorSize) {
-            const buffer = this._chunkProcessorBuffer;
-            this._chunkProcessorBuffer = {
-              raw: WavPacker.mergeBuffers(buffer.raw, data.raw),
-              mono: WavPacker.mergeBuffers(buffer.mono, data.mono)
-            };
-            if (this._chunkProcessorBuffer.mono.byteLength >= this._chunkProcessorSize) {
-              this._chunkProcessor(this._chunkProcessorBuffer);
-              this._chunkProcessorBuffer = {
-                raw: new ArrayBuffer(0),
-                mono: new ArrayBuffer(0)
-              };
-            }
+            throw new Error("deprected - chunkSize must be 0 - do not use buffering");
           } else {
-            this._chunkProcessor(data);
+            this._chunkProcessor(data, timestamp_ms);
           }
         }
       };
@@ -1122,9 +1127,6 @@ registerProcessor('audio_processor', AudioProcessor);
       } else if (!this.recording) {
         throw new Error("Already paused: please call .record() first");
       }
-      if (this._chunkProcessorBuffer.raw.byteLength) {
-        this._chunkProcessor(this._chunkProcessorBuffer);
-      }
       this.log("Pausing ...");
       await this._event("stop");
       this.recording = false;
@@ -1132,12 +1134,12 @@ registerProcessor('audio_processor', AudioProcessor);
     }
     /**
      * Start recording stream and storing to memory from the connected audio source
-     * @param {(data: { mono: Int16Array; raw: Int16Array }) => any} [chunkProcessor]
+     * @param {(data: { mono: Int16Array; raw: Int16Array }, timestamp_ms: number) => any} [chunkProcessor]
      * @param {number} [chunkSize] chunkProcessor will not be triggered until this size threshold met in mono audio
      * @returns {Promise<true>}
      */
     async record(chunkProcessor = () => {
-    }, chunkSize = 8192) {
+    }) {
       if (!this.processor) {
         throw new Error("Session ended: please call .begin() first");
       } else if (this.recording) {
@@ -1146,7 +1148,7 @@ registerProcessor('audio_processor', AudioProcessor);
         throw new Error(`chunkProcessor must be a function`);
       }
       this._chunkProcessor = chunkProcessor;
-      this._chunkProcessorSize = chunkSize;
+      this._chunkProcessorSize = 0;
       this._chunkProcessorBuffer = {
         raw: new ArrayBuffer(0),
         mono: new ArrayBuffer(0)
