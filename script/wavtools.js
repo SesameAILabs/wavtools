@@ -329,7 +329,6 @@ class StreamProcessor extends AudioWorkletProcessor {
             float32Array[i] = int16Array[i] / 0x8000; // Convert Int16 to Float32
           }
           this.writeData(float32Array, payload.trackId);
-
         } else if (
           payload.event === 'offset' ||
           payload.event === 'interrupt'
@@ -360,14 +359,6 @@ class StreamProcessor extends AudioWorkletProcessor {
       buffer[offset++] = float32Array[i];
       if (offset >= buffer.length) {
         this.outputBuffers.push(this.write);
-
-        // post audio playback timestamp
-        this.port.postMessage({
-          event: 'audio',
-          data: this.write.buffer,
-          timestamp_ms: Date.now()
-        });
-
         this.write = { buffer: new Float32Array(this.bufferLength), trackId };
         buffer = this.write.buffer;
         offset = 0;
@@ -387,6 +378,7 @@ class StreamProcessor extends AudioWorkletProcessor {
     } else if (outputBuffers.length) {
       this.hasStarted = true;
       const { buffer, trackId } = outputBuffers.shift();
+
       for (let i = 0; i < outputChannelData.length; i++) {
         outputChannelData[i] = buffer[i] || 0;
       }
@@ -395,6 +387,14 @@ class StreamProcessor extends AudioWorkletProcessor {
           this.trackSampleOffsets[trackId] || 0;
         this.trackSampleOffsets[trackId] += buffer.length;
       }
+
+      // post audio playback timestamp
+      this.port.postMessage({
+        event: 'audio',
+        data: buffer.buffer,
+        timestamp_ms: Date.now(),
+      });
+      
       return true;
     } else if (this.hasStarted) {
       this.port.postMessage({ event: 'stop' });
@@ -1073,7 +1073,7 @@ registerProcessor('audio_processor', AudioProcessor);
           this.eventReceipts[id] = data;
         } else if (event === "chunk") {
           if (this._chunkProcessorSize) {
-            throw new Error("deprected - chunkSize must be 0 - do not use buffering");
+            throw new Error("deprecated - chunkSize must be 0 - do not use buffering");
           } else {
             this._chunkProcessor(data, timestamp_ms);
           }
@@ -1135,7 +1135,6 @@ registerProcessor('audio_processor', AudioProcessor);
     /**
      * Start recording stream and storing to memory from the connected audio source
      * @param {(data: { mono: Int16Array; raw: Int16Array }, timestamp_ms: number) => any} [chunkProcessor]
-     * @param {number} [chunkSize] chunkProcessor will not be triggered until this size threshold met in mono audio
      * @returns {Promise<true>}
      */
     async record(chunkProcessor = () => {

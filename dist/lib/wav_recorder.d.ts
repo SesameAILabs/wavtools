@@ -116,7 +116,6 @@ export class WavRecorder {
     /**
      * Start recording stream and storing to memory from the connected audio source
      * @param {(data: { mono: Int16Array; raw: Int16Array }, timestamp_ms: number) => any} [chunkProcessor]
-     * @param {number} [chunkSize] chunkProcessor will not be triggered until this size threshold met in mono audio
      * @returns {Promise<true>}
      */
     record(chunkProcessor?: (data: {
