@@ -318,8 +318,10 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.bufferLength = 128;
     this.write = { buffer: new Float32Array(this.bufferLength), trackId: null };
     this.writeOffset = 0;
+    
     this.minBuffersToBeginPlayback = 15; // 15 * 128 = 1920 samples, ~85ms at 24khz
     this.playbackRate = 1;
+    this.playbackSmoothing = 0;
     
     this.isInPlayback = false;
     this.trackSampleOffsets = {};
@@ -352,6 +354,7 @@ class StreamProcessor extends AudioWorkletProcessor {
         } else if (payload.event === 'configure') {
           this.minBuffersToBeginPlayback = payload.minBuffersToBeginPlayback;
           this.playbackRate = payload.playbackRate;
+          this.playbackSmoothing = payload.playbackSmoothing;
         } else {
           throw new Error(\`Unhandled event "\${payload.event}"\`);
         }
@@ -360,18 +363,14 @@ class StreamProcessor extends AudioWorkletProcessor {
   }
 
   writeData(float32Array, trackId = null) {
-
-    // here we apply the playback rate
-
     let { buffer } = this.write;
     let offset = this.writeOffset;
 
-    // Calculate the new length after applying the playback rate
+    // Apply playback rate by resampling into a new buffer
     const resampledLength = Math.floor(float32Array.length / this.playbackRate);
     const resampledArray = new Float32Array(resampledLength);
 
-    // Resample the array based on playbackRate
-    for (let i = 0; i < resampledLength; i++) {
+    for (let i = 0; i < resampledLength; ++i) {
       const originalIndex = i * this.playbackRate;
       const start = Math.floor(originalIndex);
       const end = Math.ceil(originalIndex);
@@ -385,6 +384,26 @@ class StreamProcessor extends AudioWorkletProcessor {
         resampledArray[i] = float32Array[start] * (1 - ratio) + float32Array[end] * ratio;
       }
     }
+
+    // Apply a simple moving average to smooth the entire buffer
+    if (this.playbackSmoothing > 0) {
+      for (let i = 0; i < resampledLength; ++i) {
+        let sum = 0;
+        let count = 0;
+        
+        // Sum over the window
+        for (let j = -smoothingWindow; j <= smoothingWindow; ++j) {
+          const idx = i + j;
+          if (idx >= 0 && idx < resampledLength) {
+            sum += resampledArray[idx];
+            count++;
+          }
+        }
+
+        // Calculate the average
+        resampledArray[i] = sum / count;
+      }
+  }
 
     // Writing the resampled data to the buffer
     for (let i = 0; i < resampledArray.length; i++) {
@@ -570,7 +589,7 @@ registerProcessor('stream_processor', StreamProcessor);
       this.stream = streamNode;
       return true;
     }
-    configure(config = { minBuffersToBeginPlayback: 15, playbackRate: 1 }) {
+    configure(config = { minBuffersToBeginPlayback: 15, playbackRate: 1, playbackSmoothing: 0 }) {
       this.stream.port.postMessage({ event: "configure", ...config });
     }
     /**

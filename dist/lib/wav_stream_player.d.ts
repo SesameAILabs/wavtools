@@ -41,6 +41,7 @@ export class WavStreamPlayer {
     configure(config?: {
         minBuffersToBeginPlayback: number;
         playbackRate: number;
+        playbackSmoothing: number;
     }): void;
     /**
      * Adds 16BitPCM data to the currently playing audio stream
