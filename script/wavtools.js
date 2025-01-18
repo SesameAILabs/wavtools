@@ -316,9 +316,9 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.hasInterrupted = false;
     this.outputBuffers = [];
     this.bufferLength = 128;
-    this.write = { buffer: new Float32Array(this.bufferLength), trackId: null };
+    this.write = { buffer: new Float32Array(this.bufferLength), trackId: null, playbackRate: 1 };
     this.writeOffset = 0;
-    
+
     this.minBuffersToBeginPlayback = 15; // 15 * 128 = 1920 samples, ~85ms at 24khz
     this.playbackRate = 1;
     this.playbackSmoothing = 0;
@@ -363,15 +363,15 @@ class StreamProcessor extends AudioWorkletProcessor {
   }
 
   writeData(float32Array, trackId = null) {
-    let { buffer } = this.write;
+    let { buffer, playbackRate } = this.write;
     let offset = this.writeOffset;
 
     // Apply playback rate by resampling into a new buffer
-    const resampledLength = Math.floor(float32Array.length / this.playbackRate);
+    const resampledLength = Math.floor(float32Array.length / playbackRate);
     const resampledArray = new Float32Array(resampledLength);
 
     for (let i = 0; i < resampledLength; ++i) {
-      const originalIndex = i * this.playbackRate;
+      const originalIndex = i * playbackRate;
       const start = Math.floor(originalIndex);
       const end = Math.ceil(originalIndex);
       
@@ -410,8 +410,9 @@ class StreamProcessor extends AudioWorkletProcessor {
       buffer[offset++] = resampledArray[i];
       if (offset >= buffer.length) {
         this.outputBuffers.push(this.write);
-        this.write = { buffer: new Float32Array(this.bufferLength), trackId };
+        this.write = { buffer: new Float32Array(this.bufferLength), trackId, playbackRate: this.playbackRate };
         buffer = this.write.buffer;
+        playbackRate = this.write.playbackRate;
         offset = 0;
       }
     }
@@ -433,7 +434,7 @@ class StreamProcessor extends AudioWorkletProcessor {
       while (outputBuffers.length > 0) {
         this.hasStarted = true;
 
-        const { buffer, trackId } = outputBuffers[0];
+        const { buffer, trackId, playbackRate } = outputBuffers[0];
 
         // See if this buffer is digital silence. If it is, we skip it entirely.
         let isDigitalSilence = true;
@@ -451,7 +452,7 @@ class StreamProcessor extends AudioWorkletProcessor {
         }
 
         // Otherwise, we're going to consume this buffer.
-        samplesMoved += buffer.length;
+        samplesMoved += buffer.length * playbackRate;
         outputBuffers.shift();
 
         // If it's not digital silence, we write.
