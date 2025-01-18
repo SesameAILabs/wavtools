@@ -319,9 +319,10 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.write = { buffer: new Float32Array(this.bufferLength), trackId: null, playbackRate: 1 };
     this.writeOffset = 0;
 
-    this.minBuffersToBeginPlayback = 15; // 15 * 128 = 1920 samples, ~85ms at 24khz
+    this.playbackMinBuffers = 0;
     this.playbackRate = 1;
     this.playbackSmoothing = 0;
+    this.playbackSkipDigitalSilence = false;
     
     this.isInPlayback = false;
     this.trackSampleOffsets = {};
@@ -352,9 +353,10 @@ class StreamProcessor extends AudioWorkletProcessor {
             this.hasInterrupted = true;
           }
         } else if (payload.event === 'configure') {
-          this.minBuffersToBeginPlayback = payload.minBuffersToBeginPlayback;
+          this.playbackMinBuffers = payload.playbackMinBuffers;
           this.playbackRate = payload.playbackRate;
           this.playbackSmoothing = payload.playbackSmoothing;
+          this.playbackSkipDigitalSilence = payload.playbackSkipDigitalSilence;
         } else {
           throw new Error(\`Unhandled event "\${payload.event}"\`);
         }
@@ -437,7 +439,7 @@ class StreamProcessor extends AudioWorkletProcessor {
         const { buffer, trackId, playbackRate } = outputBuffers[0];
 
         // See if this buffer is digital silence. If it is, we skip it entirely.
-        let isDigitalSilence = true;
+        let isDigitalSilence = this.playbackSkipDigitalSilence;
         for (let i = 0; i < buffer.length; i++) {
           if (buffer[i] !== 0) {
             isDigitalSilence = false;
@@ -446,7 +448,7 @@ class StreamProcessor extends AudioWorkletProcessor {
         }
 
         // If it's not digital silence, we still may not play it.
-        const blockedForPlayback = !this.isInPlayback && outputBuffers.length < this.minBuffersToBeginPlayback;
+        const blockedForPlayback = !this.isInPlayback && outputBuffers.length < this.playbackMinBuffers;
         if (!isDigitalSilence && blockedForPlayback) {
           break;
         }
@@ -590,7 +592,7 @@ registerProcessor('stream_processor', StreamProcessor);
       this.stream = streamNode;
       return true;
     }
-    configure(config = { minBuffersToBeginPlayback: 15, playbackRate: 1, playbackSmoothing: 0 }) {
+    configure(config = { playbackMinBuffers: 0, playbackRate: 1, playbackSmoothing: 0, playbackSkipDigitalSilence: false }) {
       this.stream.port.postMessage({ event: "configure", ...config });
     }
     /**
