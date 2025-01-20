@@ -368,49 +368,8 @@ class StreamProcessor extends AudioWorkletProcessor {
     let { buffer, playbackRate } = this.write;
     let offset = this.writeOffset;
 
+    let resampledArray = this.resampleAudioData(float32Array, playbackRate);
     let resampledLength = float32Array.length;
-    let resampledArray = float32Array;
-
-    if (playbackRate !== 1) {
-      // Apply playback rate by resampling into a new buffer
-      resampledLength = Math.floor(float32Array.length / playbackRate);
-      resampledArray = new Float32Array(resampledLength);
-
-      for (let i = 0; i < resampledLength; ++i) {
-        const originalIndex = i * playbackRate;
-        const start = Math.floor(originalIndex);
-        const end = Math.ceil(originalIndex);
-        
-        if (start === end || end >= float32Array.length) {
-          // If the start and end are the same or out of bounds, just use the start value
-          resampledArray[i] = float32Array[start];
-        } else {
-          // Linear interpolation between two samples
-          const ratio = originalIndex - start;
-          resampledArray[i] = float32Array[start] * (1 - ratio) + float32Array[end] * ratio;
-        }
-      }
-
-      // Apply a simple moving average to smooth the entire buffer
-      if (this.playbackSmoothing > 0) {
-        for (let i = 0; i < resampledLength; ++i) {
-          let sum = 0;
-          let count = 0;
-          
-          // Sum over the window
-          for (let j = -smoothingWindow; j <= smoothingWindow; ++j) {
-            const idx = i + j;
-            if (idx >= 0 && idx < resampledLength) {
-              sum += resampledArray[idx];
-              count++;
-            }
-          }
-
-          // Calculate the average
-          resampledArray[i] = sum / count;
-        }
-      }
-    }
 
     // Writing the resampled data to the buffer
     for (let i = 0; i < resampledArray.length; i++) {
@@ -500,6 +459,55 @@ class StreamProcessor extends AudioWorkletProcessor {
       
       return true;
     }
+  }
+
+  // utility
+
+  resampleAudioData(float32Array, playbackRate) {
+    if (playbackRate === 1) {
+      return float32Array;
+    }
+
+    // Apply playback rate by resampling into a new buffer
+    const resampledLength = Math.floor(float32Array.length / playbackRate);
+    const resampledArray = new Float32Array(resampledLength);
+
+    for (let i = 0; i < resampledLength; ++i) {
+      const originalIndex = i * playbackRate;
+      const start = Math.floor(originalIndex);
+      const end = Math.ceil(originalIndex);
+      
+      if (start === end || end >= float32Array.length) {
+        // If the start and end are the same or out of bounds, just use the start value
+        resampledArray[i] = float32Array[start];
+      } else {
+        // Linear interpolation between two samples
+        const ratio = originalIndex - start;
+        resampledArray[i] = float32Array[start] * (1 - ratio) + float32Array[end] * ratio;
+      }
+    }
+
+    // Apply a simple moving average to smooth the entire buffer
+    if (this.playbackSmoothing > 0) {
+      for (let i = 0; i < resampledLength; ++i) {
+        let sum = 0;
+        let count = 0;
+        
+        // Sum over the window
+        for (let j = -smoothingWindow; j <= smoothingWindow; ++j) {
+          const idx = i + j;
+          if (idx >= 0 && idx < resampledLength) {
+            sum += resampledArray[idx];
+            count++;
+          }
+        }
+
+        // Calculate the average
+        resampledArray[i] = sum / count;
+      }
+    }
+
+    return resampledArray;
   }
 }
 
