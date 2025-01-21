@@ -40,7 +40,8 @@ export class WavStreamPlayer {
     private _start;
     configure(config?: {
         playbackMinBuffers: number;
-        playbackRate: number;
+        playbackRateMin: number;
+        playbackRateMax: number;
         playbackSmoothing: number;
         playbackSkipDigitalSilence: boolean;
     }): void;
