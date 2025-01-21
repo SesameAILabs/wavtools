@@ -665,9 +665,9 @@ registerProcessor('stream_processor', StreamProcessor);
       const streamNode = new AudioWorkletNode(this.context, "stream_processor");
       streamNode.connect(this.context.destination);
       streamNode.port.onmessage = (e) => {
-        const { event, data, underrun, timestamp_ms } = e.data;
+        const { event, data, timestamp_ms } = e.data;
         if (event === "audio") {
-          this._audioProcessor(data, underrun, timestamp_ms);
+          this._audioProcessor(data, timestamp_ms);
         } else if (event === "stop") {
           streamNode.disconnect();
           this.stream = null;
