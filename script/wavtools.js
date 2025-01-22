@@ -318,21 +318,20 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.hasInterrupted = false;
     this.outputBuffers = [];
     this.bufferLength = 128;
-    this.write = { buffer: new Float32Array(this.bufferLength), trackId: null };
-    this.writeOffset = 0;
-
+    this.writeTrackId = null;
+    
     // configuration
     this.playbackRateMin = 1;
     this.playbackRateMax = 1;
     this.playbackSmoothing = 0;
     this.playbackSkipDigitalSilence = false;
-    this.playbackMinBuffers = 12; // 128 * 16 = 2048 samples @ 24kHz = 85ms (2 server frames)
+    this.playbackMinBuffers = 16; // 128 * 16 = 2048 samples @ 24kHz = 85ms (2 server frames)
     
     // state
     this.playbackRate = 1;
     this.playbackOutputOffset = 0;
-
     this.isInPlayback = false;
+    
     this.trackSampleOffsets = {};
     this.port.onmessage = (event) => {
       if (event.data) {
@@ -343,13 +342,14 @@ class StreamProcessor extends AudioWorkletProcessor {
           for (let i = 0; i < int16Array.length; i++) {
             float32Array[i] = int16Array[i] / 0x8000; // Convert Int16 to Float32
           }
+          this.writeTrackId = payload.trackId;
           this.writeData(float32Array, payload.trackId);
         } else if (
           payload.event === 'offset' ||
           payload.event === 'interrupt'
         ) {
           const requestId = payload.requestId;
-          const trackId = this.write.trackId;
+          const trackId = payload.trackId || this.writeTrackId;
           const offset = this.trackSampleOffsets[trackId] || 0;
           this.port.postMessage({
             event: 'offset',
@@ -367,25 +367,45 @@ class StreamProcessor extends AudioWorkletProcessor {
           this.playbackSmoothing = payload.playbackSmoothing || this.playbackSmoothing;
           this.playbackSkipDigitalSilence = payload.playbackSkipDigitalSilence || this.playbackSkipDigitalSilence;
         } else {
-          throw new Error(\`Unhandled event "\${payload.event}"\`);
+          throw new Error('Unhandled event: ' + payload.event);
         }
       }
     };
   }
 
   writeData(float32Array, trackId = null) {
-    let { buffer } = this.write;
-    let offset = this.writeOffset;
-    for (let i = 0; i < float32Array.length; i++) {
-      buffer[offset++] = float32Array[i];
-      if (offset >= buffer.length) {
-        this.outputBuffers.push(this.write);
-        this.write = { buffer: new Float32Array(this.bufferLength), trackId };
-        buffer = this.write.buffer;
-        offset = 0;
+    // parse to find blocks of audio of the following format: [maybe silence samples | maybe non-silence samples]
+    let silenceStartIndex = 0;
+    let nonSilenceStartIndex = -1;
+    
+    for (let i = 0; i < float32Array.length; ++i) {
+      const sample = float32Array[i];
+
+      if (sample !== 0) {
+        // start of new non-silence block
+        if (nonSilenceStartIndex === -1) {
+          nonSilenceStartIndex = i;
+        }
+      } else {
+        // end of non-silence block
+        if (nonSilenceStartIndex !== -1) {
+          const buffer = float32Array.slice(silenceStartIndex, i);
+          this.outputBuffers.push({ buffer: buffer, trackId, movedSamples: i - silenceStartIndex, silenceSamples: nonSilenceStartIndex - silenceStartIndex});
+
+          silenceStartIndex = i;
+          nonSilenceStartIndex = -1;
+        }
       }
     }
-    this.writeOffset = offset;
+
+    if (nonSilenceStartIndex !== -1) {
+      const buffer = float32Array.slice(silenceStartIndex, float32Array.length);
+      this.outputBuffers.push({ buffer: buffer, trackId, movedSamples: float32Array.length - silenceStartIndex, silenceSamples: nonSilenceStartIndex - silenceStartIndex});
+    } else if (silenceStartIndex < float32Array.length) {
+      const buffer = float32Array.slice(silenceStartIndex, float32Array.length);
+      this.outputBuffers.push({ buffer: buffer, trackId, movedSamples: float32Array.length - silenceStartIndex, silenceSamples: float32Array.length - silenceStartIndex });
+    }
+
     return true;
   }
 
@@ -398,103 +418,131 @@ class StreamProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ event: 'stop' });
       return false;
     } else {
+      let samplesRead = 0;
       let samplesMoved = 0;
       let samplesWritten = 0
 
-      let outputBufferCount = outputBuffers.length;
-      
-      let iteration = 0;
+      if (outputBuffers.length > 0) {
+        const outputChanneDataSampledNeeded = outputChannelData.length;
+        
+        // audio buffer book-keeping - we want to buffer server frames of audio
+        const serverSamplesTarget = this.playbackMinBuffers * this.bufferLength;
+                
+        let shouldConsumeBuffer = false;
+        let consumableSamples = 0;
+        
+        if (this.playbackSkipDigitalSilence) {
+          // count total buffered after initial non-silence buffer
+          for (let i = 0; i < outputBuffers.length; ++i) {
+            const { movedSamples, silenceSamples } = outputBuffers[i];
+            if (this.isInPlayback || consumableSamples || movedSamples > silenceSamples) {
+              consumableSamples += movedSamples;
+            }
+          }
+          
+          // consume the buffer if we are already in non-silence playback or if enough non-silence has been buffered
+          shouldConsumeBuffer = this.isInPlayback || consumableSamples >= serverSamplesTarget;
+        } else {
+          for (let i = 0; i < outputBuffers.length; ++i) {
+            consumableSamples += outputBuffers[i].movedSamples;
+          }
+          
+          // start consumption once initial buffering is met
+          shouldConsumeBuffer = this.hasStarted || consumableSamples >= serverSamplesTarget;
+        }
 
-      while (outputBufferCount > 0) {
-        const outputChanneDataSampledNeeded = outputChannelData.length - samplesWritten;
-    
-        // apply playback rate to determine how many samples are needed
-        const playbackRate = this.setPlaybackRate();
-        const outputBufferSamplesNeeded = Math.floor(outputChanneDataSampledNeeded * playbackRate);
-        const outputBuffer = new Float32Array(outputBufferSamplesNeeded);
+        if (shouldConsumeBuffer) {
+          // apply playback rate to determine how many samples are needed
+          const playbackRate = 1.0;
+          if (this.playbackRateMin < this.playbackRateMax) {
+            // only adjust playback rate if we are down to less than half our buffer
+            const serverSamplesDelta = consumableSamples - serverSamplesTarget;
 
-        // get the next outputBufferSamplesNeeded samples from outputBuffers
-        let outputTrackId = null;
+            if (Math.abs(serverSamplesDelta) > 0.5 * serverSamplesTarget) {
+              if (serverSamplesDelta <= 0) {
+                // slow down
+                playbackRate = 1.0 + serverSamplesDelta / serverSamplesTarget;
+              } else {
+                // speed up
+                playbackRate = 1.0 / (1.0 - serverSamplesDelta / serverSamplesTarget);
+              }
+            }
+            playbackRate = this.playbackRate = Math.min(this.playbackRateMax, Math.max(this.playbackRateMin, playbackRate));
+          }
+        
+          // this.port.postMessage({ event: 'log', data: { consumableSamples, playbackRate } });
+          
+          const outputBufferSamplesNeeded = Math.floor(outputChanneDataSampledNeeded * playbackRate);
+          const outputBuffer = new Float32Array(outputBufferSamplesNeeded);
 
-        // read the necessary samples from the outputBuffers
-        let samplesRead = 0;
-        let outputBufferIndex = 0;
-        let outputBufferOffset = this.playbackOutputOffset;
-        for ( ; outputBufferIndex < outputBuffers.length; ++outputBufferIndex) {
-          const { buffer, trackId } = outputBuffers[outputBufferIndex];
+          // read the necessary samples from the outputBuffers
+          let outputBufferIndex = 0;
+          let outputBufferOffset = this.playbackOutputOffset;
+          let outputTrackId = null;
+          for ( ; outputBufferIndex < outputBuffers.length; ++outputBufferIndex) {
+            const { buffer, trackId, movedSamples, silenceSamples } = outputBuffers[outputBufferIndex];
 
-          for (let j = outputBufferOffset; j < buffer.length; ++j) {
-            outputBuffer[samplesRead++] = buffer[j];
-            
-            // advance output buffer
-            if (j === buffer.length - 1) {
-              outputBufferOffset = 0;
-            } else {
-              outputBufferOffset = j + 1;
+            outputTrackId = trackId;
+
+            // skip full buffers of silence (if enabled)
+            if (this.playbackSkipDigitalSilence) {
+              if (movedSamples === silenceSamples && outputBufferOffset === 0) {
+                samplesMoved += movedSamples;
+                continue;
+              }
+            }
+
+            // read samples from the buffer
+            for (let j = outputBufferOffset; j < buffer.length && samplesRead < outputBufferSamplesNeeded; ++j) {
+              outputBuffer[samplesRead++] = buffer[j];
+              samplesMoved++;
+              
+              // advance output buffer
+              if (j === buffer.length - 1) {
+                outputBufferOffset = 0;
+              } else {
+                outputBufferOffset++;
+              }
+            }
+
+            // done if read enough samples
+            if (samplesRead === outputBufferSamplesNeeded) {
+              break;
             }
           }
 
-          outputTrackId = trackId;
+          // done if no samples
+          if (samplesRead > 0) {
+            // apply playback rate to output buffer
+            const resampledBuffer = this.resampleAudioData(outputBuffer, outputChanneDataSampledNeeded);
+            
+            // write the resampled buffer to the output channel
+            for (let i = 0; i < resampledBuffer.length && samplesWritten < outputChanneDataSampledNeeded; ++i) {
+              outputChannelData[samplesWritten++] = resampledBuffer[i];
+            }
 
-          // done if read enough samples
-          if (samplesRead === outputBufferSamplesNeeded) {
-            break;
+            // update output buffers
+            this.outputBuffers = outputBuffers.slice(outputBufferIndex);
+            this.playbackOutputOffset = outputBufferOffset;
+          
+            if (outputTrackId) {
+              this.trackSampleOffsets[outputTrackId] =
+                this.trackSampleOffsets[outputTrackId] || 0;
+              this.trackSampleOffsets[outputTrackId] += resampledBuffer.length;
+            }
           }
         }
+      }
 
-        // done if no samples read
-        if (samplesRead === 0) {
-          break;
-        }
-
+      if (samplesMoved > 0) {
         this.hasStarted = true;
 
-        // apply playback rate to output buffer
-        let resampledBuffer = this.resampleAudioData(outputBuffer, outputChanneDataSampledNeeded);
-
-        // See if this resampledBuffer is digital silence. If it is, we skip it entirely.
-        let isDigitalSilence = true;
-        for (let i = 0; i < resampledBuffer.length; i++) {
-          if (resampledBuffer[i] !== 0) {
-            isDigitalSilence = false;
-            break;
-          }
-        }
-
-        // if not yet speaking (but have speech), still need to wait until enough input has been buffered
-        const consumeSilence = isDigitalSilence && this.playbackSkipDigitalSilence;
-        const consumePlayback = !isDigitalSilence && outputBufferCount >= this.playbackMinBuffers;
-
-        if (!this.isInPlayback && !consumeSilence && !consumePlayback) {
-          break;
-        }
-
-        // consume this buffer
-        samplesMoved += outputBuffer.length;
-
-        this.outputBuffers = outputBuffers.slice(outputBufferIndex);
-        this.playbackOutputOffset = outputBufferOffset;
-
-        // If it's not digital silence, we write.
-        if (!isDigitalSilence) {
-          for (let i = 0; i < resampledBuffer.length; ++i) {
-            outputChannelData[samplesWritten++] = resampledBuffer[i];
-          }
-        }
-
-        if (outputTrackId) {
-          this.trackSampleOffsets[outputTrackId] =
-            this.trackSampleOffsets[outputTrackId] || 0;
-          this.trackSampleOffsets[outputTrackId] += resampledBuffer.length;
-        }
-
-        // track buffer count before consuming
-        outputBufferCount = outputBuffers.length
-
-        // done if written enough samples
-        if (samplesWritten === outputChannelData.length) {
-          break;
-        }
+        // post audio playback timestamp
+        this.port.postMessage({
+          event: 'audio',
+          data: samplesMoved,
+          timestamp_ms: Date.now(),
+        });
       }
 
       if (samplesWritten > 0) {
@@ -502,13 +550,6 @@ class StreamProcessor extends AudioWorkletProcessor {
       } else {
         this.isInPlayback = false;
       }
-
-      // post audio playback timestamp
-      this.port.postMessage({
-        event: 'audio',
-        data: samplesMoved,
-        timestamp_ms: Date.now(),
-      });
 
       return true;
     }
@@ -520,6 +561,7 @@ class StreamProcessor extends AudioWorkletProcessor {
     if (targetSamples === float32Array.length) {
       return float32Array;
     }
+
     // Apply playback rate by resampling into a new buffer
     const resampledBuffer = new Float32Array(targetSamples);
     const playbackRate = float32Array.length / targetSamples;
@@ -560,31 +602,6 @@ class StreamProcessor extends AudioWorkletProcessor {
     }
 
     return resampledBuffer;
-  }
-
-  setPlaybackRate() {
-    let playbackRate = 1.0;
-    if (this.playbackRateMin < this.playbackRateMax && this.outputBuffers.length > 0) {
-      let totalAudioSamples = this.bufferLength * (this.outputBuffers.length - 1) + (this.bufferLength - this.playbackOutputOffset);
-
-      // audio buffer book-keeping - we want to buffer 2 server frames of audio
-      const serverSamplesTarget = this.playbackMinBuffers * this.bufferLength;
-      const serverSamplesDelta = totalAudioSamples - serverSamplesTarget
-
-      // only adjust playback rate if we are down to less than half our buffer
-      if (Math.abs(serverSamplesDelta) > 0.5 * serverSamplesTarget) {
-        if (serverSamplesDelta <= 0) {
-          // slow down
-          playbackRate = 1.0 + serverSamplesDelta / serverSamplesTarget;
-        } else {
-          // speed up
-          playbackRate = 1.0 / (1.0 - serverSamplesDelta / serverSamplesTarget);
-        }
-      }
-
-      playbackRate = this.playbackRate = Math.min(this.playbackRateMax, Math.max(this.playbackRateMin, playbackRate));
-    }
-    return playbackRate
   }
 }
 
@@ -734,11 +751,11 @@ registerProcessor('stream_processor', StreamProcessor);
         trackSampleOffset = this.trackSampleOffsets[requestId];
         await new Promise((r) => setTimeout(() => r(), 1));
       }
-      const { trackId, offset, audio } = trackSampleOffset;
+      const { trackId } = trackSampleOffset;
       if (interrupt && trackId) {
         this.interruptedTrackIds[trackId] = true;
       }
-      return { trackId, offset, audio };
+      return trackSampleOffset;
     }
     /**
      * Strips the current stream and returns the sample offset of the audio
@@ -746,8 +763,7 @@ registerProcessor('stream_processor', StreamProcessor);
      * @returns {{trackId: string|null, offset: number, currentTime: number}}
      */
     async interrupt() {
-      const { audio } = this.getTrackSampleOffset(true);
-      return audio;
+      return this.getTrackSampleOffset(true);
     }
   };
   globalThis.WavStreamPlayer = WavStreamPlayer;
