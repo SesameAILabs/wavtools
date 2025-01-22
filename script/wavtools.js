@@ -379,9 +379,7 @@ class StreamProcessor extends AudioWorkletProcessor {
     let nonSilenceStartIndex = -1;
     
     for (let i = 0; i < float32Array.length; ++i) {
-      const sample = float32Array[i];
-
-      if (sample !== 0) {
+      if (float32Array[i] !== 0) {
         // start of new non-silence block
         if (nonSilenceStartIndex === -1) {
           nonSilenceStartIndex = i;
@@ -390,7 +388,7 @@ class StreamProcessor extends AudioWorkletProcessor {
         // end of non-silence block
         if (nonSilenceStartIndex !== -1) {
           const buffer = float32Array.slice(silenceStartIndex, i);
-          this.outputBuffers.push({ buffer: buffer, trackId, movedSamples: i - silenceStartIndex, silenceSamples: nonSilenceStartIndex - silenceStartIndex});
+          this.outputBuffers.push({ trackId, buffer, movedSamples: i - silenceStartIndex, silenceSamples: nonSilenceStartIndex - silenceStartIndex});
 
           silenceStartIndex = i;
           nonSilenceStartIndex = -1;
@@ -398,12 +396,13 @@ class StreamProcessor extends AudioWorkletProcessor {
       }
     }
 
+    // handle the last block
     if (nonSilenceStartIndex !== -1) {
       const buffer = float32Array.slice(silenceStartIndex, float32Array.length);
-      this.outputBuffers.push({ buffer: buffer, trackId, movedSamples: float32Array.length - silenceStartIndex, silenceSamples: nonSilenceStartIndex - silenceStartIndex});
+      this.outputBuffers.push({ trackId, buffer, movedSamples: float32Array.length - silenceStartIndex, silenceSamples: nonSilenceStartIndex - silenceStartIndex});
     } else if (silenceStartIndex < float32Array.length) {
       const buffer = float32Array.slice(silenceStartIndex, float32Array.length);
-      this.outputBuffers.push({ buffer: buffer, trackId, movedSamples: float32Array.length - silenceStartIndex, silenceSamples: float32Array.length - silenceStartIndex });
+      this.outputBuffers.push({ trackId, buffer, movedSamples: float32Array.length - silenceStartIndex, silenceSamples: float32Array.length - silenceStartIndex });
     }
 
     return true;
@@ -424,12 +423,11 @@ class StreamProcessor extends AudioWorkletProcessor {
 
       if (outputBuffers.length > 0) {
         const outputChanneDataSampledNeeded = outputChannelData.length;
-        
-        // audio buffer book-keeping - we want to buffer server frames of audio
         const serverSamplesTarget = this.playbackMinBuffers * this.bufferLength;
-                
+        
+        // determine if we should consume the output buffer        
         let shouldConsumeBuffer = false;
-        let consumableSamples = 0;
+        let consumableSamples = -this.playbackOutputOffset;
         
         if (this.playbackSkipDigitalSilence) {
           // count total buffered after initial non-silence buffer
@@ -451,8 +449,8 @@ class StreamProcessor extends AudioWorkletProcessor {
           shouldConsumeBuffer = this.hasStarted || consumableSamples >= serverSamplesTarget;
         }
 
-        if (shouldConsumeBuffer) {
-          // apply playback rate to determine how many samples are needed
+        if (shouldConsumeBuffer && consumableSamples > 0) {
+          // apply playback rate to determine how many samples to consume
           const playbackRate = 1.0;
           if (this.playbackRateMin < this.playbackRateMax) {
             // only adjust playback rate if we are down to less than half our buffer
@@ -522,7 +520,7 @@ class StreamProcessor extends AudioWorkletProcessor {
             }
 
             // update output buffers
-            this.outputBuffers = outputBuffers.slice(outputBufferIndex);
+            this.outputBuffers = this.outputBuffers.slice(outputBufferIndex);
             this.playbackOutputOffset = outputBufferOffset;
           
             if (outputTrackId) {
