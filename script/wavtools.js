@@ -1034,10 +1034,10 @@ registerProcessor('audio_processor', AudioProcessor);
         window.alert("You must grant microphone access to use this feature.");
       } else if (permissionStatus.state === "prompt") {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({
+          const stream2 = await navigator.mediaDevices.getUserMedia({
             audio: true
           });
-          const tracks = stream.getTracks();
+          const tracks = stream2.getTracks();
           tracks.forEach((track) => track.stop());
         } catch (e) {
           window.alert("You must grant microphone access to use this feature.");
@@ -1096,6 +1096,8 @@ registerProcessor('audio_processor', AudioProcessor);
           config.audio.deviceId = { exact: deviceId };
         }
         this.stream = await navigator.mediaDevices.getUserMedia(config);
+        const track = stream.getAudioTracks()[0];
+        console.log("track-settings", track.getSettings());
       } catch (err) {
         throw new Error("Could not start media stream");
       }
