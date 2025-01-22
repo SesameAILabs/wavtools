@@ -18,11 +18,12 @@ export class WavStreamPlayer {
     analyser: any;
     trackSampleOffsets: {};
     interruptedTrackIds: {};
+    _audioProcessor: () => void;
     /**
      * Connects the audio context and enables output to speakers
      * @returns {Promise<true>}
      */
-    connect(): Promise<true>;
+    connect(onAudioDataSent: any): Promise<true>;
     /**
      * Gets the current frequency domain data from the playing track
      * @param {"frequency"|"music"|"voice"} [analysisType]
