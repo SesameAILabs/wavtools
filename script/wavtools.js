@@ -318,6 +318,8 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.bufferLength = 128;
     this.write = { buffer: new Float32Array(this.bufferLength), trackId: null };
     this.writeOffset = 0;
+    this.minBuffersToBeginPlayback = 12; // 12 * 128 = 1536 samples, ~68ms at 24khz
+    this.isInPlayback = false;
     this.trackSampleOffsets = {};
     this.port.onmessage = (event) => {
       if (event.data) {
@@ -375,31 +377,70 @@ class StreamProcessor extends AudioWorkletProcessor {
     if (this.hasInterrupted) {
       this.port.postMessage({ event: 'stop' });
       return false;
-    } else if (outputBuffers.length) {
-      this.hasStarted = true;
-      const { buffer, trackId } = outputBuffers.shift();
+    } else {
+      let samplesMoved = 0;
+      let wroteSamples = false;
 
-      for (let i = 0; i < outputChannelData.length; i++) {
-        outputChannelData[i] = buffer[i] || 0;
-      }
-      if (trackId) {
-        this.trackSampleOffsets[trackId] =
-          this.trackSampleOffsets[trackId] || 0;
-        this.trackSampleOffsets[trackId] += buffer.length;
+      while (outputBuffers.length > 0) {
+        this.hasStarted = true;
+
+        const { buffer, trackId } = outputBuffers[0];
+
+        // See if this buffer is digital silence. If it is, we skip it entirely.
+        let isDigitalSilence = true;
+        for (let i = 0; i < buffer.length; i++) {
+          if (buffer[i] !== 0) {
+            isDigitalSilence = false;
+            break;
+          }
+        }
+
+        // If it's not digital silence, we still may not play it.
+        const blockedForPlayback = !this.isInPlayback && outputBuffers.length < this.minBuffersToBeginPlayback;
+        if (!isDigitalSilence && blockedForPlayback) {
+          break;
+        }
+
+        // Otherwise, we're going to consume this buffer.
+        samplesMoved += buffer.length;
+        outputBuffers.shift();
+
+        // If it's not digital silence, we write.
+        if (!isDigitalSilence) {
+          for (let i = 0; i < outputChannelData.length; i++) {
+            outputChannelData[i] = buffer[i] || 0;
+          }
+
+          wroteSamples = true;
+        } 
+
+        if (trackId) {
+          this.trackSampleOffsets[trackId] =
+            this.trackSampleOffsets[trackId] || 0;
+          this.trackSampleOffsets[trackId] += buffer.length;
+        }
+
+        // If we wrote samples, we're done.
+        if (wroteSamples) {
+          break;
+        }
       }
 
       // post audio playback timestamp
-      this.port.postMessage({
-        event: 'audio',
-        data: buffer.buffer,
-        timestamp_ms: Date.now(),
-      });
+      if (samplesMoved > 0) {
+        this.port.postMessage({
+          event: 'audio',
+          data: samplesMoved,
+          timestamp_ms: Date.now(),
+        });
+      } 
+
+      if (wroteSamples) {
+        this.isInPlayback = true;
+      } else {
+        this.isInPlayback = false;
+      }
       
-      return true;
-    } else if (this.hasStarted) {
-      this.port.postMessage({ event: 'stop' });
-      return false;
-    } else {
       return true;
     }
   }
@@ -1050,11 +1091,13 @@ registerProcessor('audio_processor', AudioProcessor);
         throw new Error("Could not request user media");
       }
       try {
-        const config = { audio: true };
+        const config = { audio: { echoCancellation: true } };
         if (deviceId) {
-          config.audio = { deviceId: { exact: deviceId } };
+          config.audio.deviceId = { exact: deviceId };
         }
         this.stream = await navigator.mediaDevices.getUserMedia(config);
+        const track = this.stream.getAudioTracks()[0];
+        console.log("track-settings", track.getSettings());
       } catch (err) {
         throw new Error("Could not start media stream");
       }
