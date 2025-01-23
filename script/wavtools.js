@@ -324,11 +324,12 @@ class StreamProcessor extends AudioWorkletProcessor {
     this.playbackRateMin = 1.0;
     this.playbackRateMax = 1.0;
     this.playbackRateAffordance = 0.2;
-    this.playbackSmoothing = 0;
+    this.playbackSmoothing = 0.9;
     this.playbackSkipDigitalSilence = true;
     this.playbackMinBuffers = 16; // 16 * 128 samples @ 24kHz ~ 85ms (2 server frames)
     
     // state
+    this.playbackRate = 1.0;
     this.playbackOutputOffset = 0;
     this.isInPlayback = false;
     
@@ -447,12 +448,13 @@ class StreamProcessor extends AudioWorkletProcessor {
 
         if (shouldConsumeBuffer && consumableSamples > 0) {
           // apply playback rate to determine how many samples to consume
-          const playbackRate = this.determinPlaybackRate(consumableSamples, serverSamplesTarget);
+          const playbackRateTarget = this.determinePlaybackRate(consumableSamples, serverSamplesTarget);
+          this.playbackRate = this.playbackRate * this.playbackSmoothing + playbackRateTarget * (1 - this.playbackSmoothing);
   
-          const outputBufferSamplesNeeded = Math.floor(outputChanneDataSampledNeeded * playbackRate);
+          const outputBufferSamplesNeeded = Math.floor(outputChanneDataSampledNeeded * this.playbackRate);
           const outputBuffer = new Float32Array(outputBufferSamplesNeeded);
 
-          // this.port.postMessage({ event: 'log', data: '[worker] Consuming ' + outputBufferSamplesNeeded + ' of ' + consumableSamples + ' samples (total: ' + totalSamples + ') @ ' + playbackRate });
+          // this.port.postMessage({ event: 'log', data: '[worker] Consuming ' + outputBufferSamplesNeeded + ' of ' + consumableSamples + ' samples (total: ' + totalSamples + ') @ ' + this.playbackRate });
 
           // read the necessary (or as many as available) samples from the outputBuffers
           let outputBufferIndex = 0;
@@ -562,42 +564,22 @@ class StreamProcessor extends AudioWorkletProcessor {
         resampledBuffer[i] = float32Array[start] * (1 - ratio) + float32Array[end] * ratio;
       }
     }
-
-    // Apply a simple moving average to smooth the entire buffer
-    if (this.playbackSmoothing > 0) {
-      for (let i = 0; i < targetSamples; ++i) {
-        let sum = 0;
-        let count = 0;
-
-        // Sum over the window
-        for (let j = -smoothingWindow; j <= smoothingWindow; ++j) {
-          const idx = i + j;
-          if (idx >= 0 && idx < targetSamples) {
-            sum += resampledBuffer[idx];
-            count++;
-          }
-        }
-
-        // Calculate the average
-        resampledBuffer[i] = sum / count;
-      }
-    }
-
+    
     return resampledBuffer;
   }
 
-  determinPlaybackRate(availabeSamples, targetSamples) {
+  determinePlaybackRate(availableSamples, targetSamples) {
     let playbackRate = 1.0;
     if (this.playbackRateMin < this.playbackRateMax) {
       // adjust playback rate based on how far we are from the target (with affordance)
-      const serverSamplesDelta = availabeSamples - targetSamples;
-      if (Math.abs(serverSamplesDelta) > this.playbackRateAffordance * targetSamples) {
-        if (serverSamplesDelta <= 0) {
+      const samplesDelta = availableSamples - targetSamples;
+      if (Math.abs(samplesDelta) > this.playbackRateAffordance * targetSamples) {
+        if (samplesDelta <= 0) {
           // slow down
-          playbackRate = 1.0 + Math.max(-0.975, serverSamplesDelta / targetSamples);
+          playbackRate = 1.0 + Math.max(-0.975, samplesDelta / targetSamples);
         } else {
           // speed up
-          playbackRate = 1.0 / (1.0 - Math.min(0.975, serverSamplesDelta / targetSamples));
+          playbackRate = 1.0 / (1.0 - Math.min(0.975, samplesDelta / targetSamples));
         }
       }
       
