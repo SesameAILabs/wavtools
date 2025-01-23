@@ -50,22 +50,19 @@ export class WavStreamPlayer {
     /**
      * Gets the offset (sample count) of the currently playing stream
      * @param {boolean} [interrupt]
-     * @returns {{trackId: string|null, offset: number, currentTime: number}}
+     * @returns {{trackId: string|null, offset: number, currentTime: number, audio: ArrayBuffer}}
      */
     getTrackSampleOffset(interrupt?: boolean): {
         trackId: string | null;
         offset: number;
         currentTime: number;
+        audio: ArrayBuffer;
     };
     /**
      * Strips the current stream and returns the sample offset of the audio
      * @param {boolean} [interrupt]
-     * @returns {{trackId: string|null, offset: number, currentTime: number}}
+     * @returns {Promise<ArrayBuffer>} a 16-BitPCM audio buffer
      */
-    interrupt(): {
-        trackId: string | null;
-        offset: number;
-        currentTime: number;
-    };
+    interrupt(): Promise<ArrayBuffer>;
 }
 //# sourceMappingURL=wav_stream_player.d.ts.map
