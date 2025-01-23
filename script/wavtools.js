@@ -411,6 +411,7 @@ class StreamProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ event: 'stop' });
       return false;
     } else {
+      let totalSamples = 0;
       let samplesRead = 0;
       let samplesMoved = 0;
       let samplesWritten = 0
@@ -419,20 +420,22 @@ class StreamProcessor extends AudioWorkletProcessor {
         const outputChanneDataSampledNeeded = outputChannelData.length;
         const serverSamplesTarget = this.playbackMinBuffers * this.bufferLength;
         
-        // determine if we should consume the output buffer        
-        let totalSamples = -this.playbackOutputOffset;
-        let consumableSamples = totalSamples;
+        // determine if we should consume the output buffer(s)
+        let consumableSamples = -this.playbackOutputOffset;
         let shouldConsumeBuffer = false;
         
         if (this.playbackSkipDigitalSilence) {
           // count total buffered after initial non-silence buffer
+          let foundNonSilence = false;
           for (let i = 0; i < outputBuffers.length; ++i) {
             const { buffer, isSilence } = outputBuffers[i];
-            
+
             totalSamples += buffer.length;
+
             // consider a sample as consumable if we are in or entering playback or if it is non-silence
-            if (this.isInPlayback || consumableSamples > 0 || !isSilence) {
+            if (this.isInPlayback || !isSilence || foundNonSilence) {
               consumableSamples += buffer.length;
+              foundNonSilence = true;
             }
           }
           
@@ -440,9 +443,11 @@ class StreamProcessor extends AudioWorkletProcessor {
           shouldConsumeBuffer = this.isInPlayback || consumableSamples >= serverSamplesTarget;
         } else {
           for (let i = 0; i < outputBuffers.length; ++i) {
-            consumableSamples += outputBuffers[i].buffer.length;
+            const { buffer } = outputBuffers[i];
+            
+            totalSamples += buffer.length;
+            consumableSamples += buffer.length;
           }
-          totalSamples = consumableSamples;
           
           // start continuous consumption once initial buffering is met
           shouldConsumeBuffer = this.hasStarted || consumableSamples >= serverSamplesTarget;
@@ -520,7 +525,7 @@ class StreamProcessor extends AudioWorkletProcessor {
         }
       }
 
-      if (samplesMoved > 0) {
+      if (samplesRead > 0) {
         this.hasStarted = true;
       }
 
@@ -534,7 +539,7 @@ class StreamProcessor extends AudioWorkletProcessor {
       this.port.postMessage({
         event: 'audio',
         data: samplesMoved,
-        underrun: Math.max(0, outputChannelData.length - samplesMoved),
+        underrun: Math.max(0, outputChannelData.length - totalSamples),
         timestamp_ms: Date.now(),
       });
 
