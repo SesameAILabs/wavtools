@@ -38,6 +38,7 @@ export class WavStreamPlayer {
      * @returns {Promise<true>}
      */
     private _start;
+    configure(config: any): void;
     /**
      * Adds 16BitPCM data to the currently playing audio stream
      * You can add chunks beyond the current play point and they will be queued for play
