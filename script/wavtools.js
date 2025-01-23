@@ -372,6 +372,8 @@ class StreamProcessor extends AudioWorkletProcessor {
             ...payload.config,
           };
 
+          // this.port.postMessage({ event: 'log', data: '[worker] Configuring ' + JSON.stringify(config) });
+
           this.playbackMinBuffers = config.playbackMinBuffers;
           this.playbackRateMin = config.playbackRateMin;
           this.playbackRateMax = config.playbackRateMax;
@@ -636,6 +638,9 @@ registerProcessor('stream_processor', StreamProcessor);
       analyser.fftSize = 8192;
       analyser.smoothingTimeConstant = 0.1;
       this.analyser = analyser;
+      if (!this.stream) {
+        this._start();
+      }
       return true;
     }
     /**
@@ -688,7 +693,11 @@ registerProcessor('stream_processor', StreamProcessor);
       return true;
     }
     configure(config) {
-      this.stream.port.postMessage({ event: "configure", config });
+      if (this.stream) {
+        this.stream.port.postMessage({ event: "configure", config });
+      } else {
+        throw new Error("Not connected, please call .connect() first");
+      }
     }
     /**
      * Adds 16BitPCM data to the currently playing audio stream
