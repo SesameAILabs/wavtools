@@ -143,10 +143,10 @@ export class WavRecorder {
      */
     save(force?: boolean): Promise<import("./wav_packer.js").WavPackerAudioType>;
     /**
-     * Ends the current recording session and saves the result
-     * @returns {Promise<import('./wav_packer.js').WavPackerAudioType>}
+     * Ends the current recording session and saves the result to 16-bit PCM audio dataß≈
+     * @returns {Promise<ArrayBuffer>}
      */
-    end(): Promise<import("./wav_packer.js").WavPackerAudioType>;
+    end(): Promise<ArrayBuffer>;
     /**
      * Performs a full cleanup of WavRecorder instance
      * Stops actively listening via microphone and removes existing listeners

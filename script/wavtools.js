@@ -673,9 +673,9 @@ registerProcessor('stream_processor', StreamProcessor);
           streamNode.disconnect();
           this.stream = null;
         } else if (event === "offset") {
-          const { requestId, trackId, offset } = e.data;
+          const { requestId, trackId, offset, audio } = e.data;
           const currentTime = offset / this.sampleRate;
-          this.trackSampleOffsets[requestId] = { trackId, offset, currentTime };
+          this.trackSampleOffsets[requestId] = { trackId, offset, currentTime, audio };
         } else if (event === "log") {
           console.log(data);
         }
@@ -719,7 +719,7 @@ registerProcessor('stream_processor', StreamProcessor);
     /**
      * Gets the offset (sample count) of the currently playing stream
      * @param {boolean} [interrupt]
-     * @returns {{trackId: string|null, offset: number, currentTime: number}}
+     * @returns {{trackId: string|null, offset: number, currentTime: number, audio: ArrayBuffer}}
      */
     async getTrackSampleOffset(interrupt = false) {
       if (!this.stream) {
@@ -744,10 +744,14 @@ registerProcessor('stream_processor', StreamProcessor);
     /**
      * Strips the current stream and returns the sample offset of the audio
      * @param {boolean} [interrupt]
-     * @returns {{trackId: string|null, offset: number, currentTime: number}}
+     * @returns {Promise<ArrayBuffer>} a 16-BitPCM audio buffer
      */
     async interrupt() {
-      return this.getTrackSampleOffset(true);
+      const trackSampleOffset = await this.getTrackSampleOffset(true);
+      if (trackSampleOffset) {
+        return trackSampleOffset.audio;
+      }
+      return null;
     }
   };
   globalThis.WavStreamPlayer = WavStreamPlayer;
@@ -861,12 +865,13 @@ class AudioProcessor extends AudioWorkletProcessor {
     const channels = this.readChannelData(this.chunks);
     const { float32Array, meanValues } = this.formatAudioData(channels);
     const audioData = this.floatTo16BitPCM(float32Array);
+    const monoData = this.floatTo16BitPCM(meanValues);
     return {
-      meanValues: meanValues,
       audio: {
         bitsPerSample: 16,
         channels: channels,
         data: audioData,
+        mono: monoData,
       },
     };
   }
@@ -1393,8 +1398,8 @@ registerProcessor('audio_processor', AudioProcessor);
       return result;
     }
     /**
-     * Ends the current recording session and saves the result
-     * @returns {Promise<import('./wav_packer.js').WavPackerAudioType>}
+     * Ends the current recording session and saves the result to 16-bit PCM audio dataß≈
+     * @returns {Promise<ArrayBuffer>}
      */
     async end() {
       if (!this.processor) {
@@ -1416,9 +1421,7 @@ registerProcessor('audio_processor', AudioProcessor);
       this.processor = null;
       this.source = null;
       this.node = null;
-      const packer = new WavPacker();
-      const result = packer.pack(this.sampleRate, exportData.audio);
-      return result;
+      return exportData.audio.mono;
     }
     /**
      * Performs a full cleanup of WavRecorder instance
