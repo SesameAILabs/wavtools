@@ -331,6 +331,11 @@ class StreamProcessor extends AudioWorkletProcessor {
     // state
     this.playbackRate = 1.0;
     this.playbackOutputOffset = 0;
+
+    // recording
+    this.playbackRecord = false;
+    this.playbackAudioChunks = [];
+
     this.isInPlayback = false;
     
     this.trackSampleOffsets = {};
@@ -357,6 +362,7 @@ class StreamProcessor extends AudioWorkletProcessor {
             requestId,
             trackId,
             offset,
+            audio: this.floatTo16BitPCM(this.mergeAudioData(this.playbackAudioChunks))
           });
           if (payload.event === 'interrupt') {
             this.hasInterrupted = true;
@@ -527,6 +533,14 @@ class StreamProcessor extends AudioWorkletProcessor {
           data: samplesMoved,
           timestamp_ms: Date.now(),
         });
+
+        // append audio chunk and merge if necessary
+        if (this.playbackEnableRecording) {
+          this.playbackAudioChunks.push(outputChannelData.slice(0));
+          if (this.playbackAudioChunks.length > 64) {
+            this.playbackAudioChunks = [this.mergeAudioData(this.playbackAudioChunks)];
+          }
+        }
       }
 
       if (samplesWritten > 0) {
@@ -540,6 +554,27 @@ class StreamProcessor extends AudioWorkletProcessor {
   }
 
   // utility
+
+  determinePlaybackRate(availableSamples, targetSamples) {
+    let playbackRate = 1.0;
+    if (this.playbackRateMin < this.playbackRateMax) {
+      // adjust playback rate based on how far we are from the target (with affordance)
+      const samplesDelta = availableSamples - targetSamples;
+      if (Math.abs(samplesDelta) > this.playbackRateAffordance * targetSamples) {
+        if (samplesDelta <= 0) {
+          // slow down
+          playbackRate = 1.0 + Math.max(-0.975, samplesDelta / targetSamples);
+        } else {
+          // speed up
+          playbackRate = 1.0 / (1.0 - Math.min(0.975, samplesDelta / targetSamples));
+        }
+      }
+      
+      playbackRate = Math.min(this.playbackRateMax, Math.max(this.playbackRateMin, playbackRate));
+    }
+
+    return playbackRate;
+  }
 
   resampleAudioData(float32Array, targetSamples) {
     if (targetSamples === float32Array.length) {
@@ -568,24 +603,33 @@ class StreamProcessor extends AudioWorkletProcessor {
     return resampledBuffer;
   }
 
-  determinePlaybackRate(availableSamples, targetSamples) {
-    let playbackRate = 1.0;
-    if (this.playbackRateMin < this.playbackRateMax) {
-      // adjust playback rate based on how far we are from the target (with affordance)
-      const samplesDelta = availableSamples - targetSamples;
-      if (Math.abs(samplesDelta) > this.playbackRateAffordance * targetSamples) {
-        if (samplesDelta <= 0) {
-          // slow down
-          playbackRate = 1.0 + Math.max(-0.975, samplesDelta / targetSamples);
-        } else {
-          // speed up
-          playbackRate = 1.0 / (1.0 - Math.min(0.975, samplesDelta / targetSamples));
-        }
-      }
-      
-      playbackRate = Math.min(this.playbackRateMax, Math.max(this.playbackRateMin, playbackRate));
+  mergeAudioData(float32Arrays) {
+    let samples = 0;
+    for (let i = 0; i < float32Arrays.length; ++i) {
+      samples += float32Arrays[i].length;
     }
-    return playbackRate;
+
+    const merged = new Float32Array(samples);
+    let offset = 0;
+    for (let i = 0; i < float32Arrays.length; ++i) {
+      const chunk = float32Arrays[i];
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+      
+    return merged;
+  }
+
+  floatTo16BitPCM(float32Array) {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    let offset = 0;
+    for (let i = 0; i < float32Array.length; i++, offset += 2) {
+      let s = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+
+    return buffer;
   }
 }
 
