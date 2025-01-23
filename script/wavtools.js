@@ -520,13 +520,6 @@ class StreamProcessor extends AudioWorkletProcessor {
 
       if (samplesMoved > 0) {
         this.hasStarted = true;
-
-        // post audio playback timestamp
-        this.port.postMessage({
-          event: 'audio',
-          data: samplesMoved,
-          timestamp_ms: Date.now(),
-        });
       }
 
       if (samplesWritten > 0) {
@@ -534,6 +527,14 @@ class StreamProcessor extends AudioWorkletProcessor {
       } else {
         this.isInPlayback = false;
       }
+
+      // post audio playback timestamp
+      this.port.postMessage({
+        event: 'audio',
+        data: samplesMoved,
+        underrun: Math.max(0, outputChannelData.length - samplesMoved),
+        timestamp_ms: Date.now(),
+      });
 
       return true;
     }
@@ -666,9 +667,9 @@ registerProcessor('stream_processor', StreamProcessor);
       const streamNode = new AudioWorkletNode(this.context, "stream_processor");
       streamNode.connect(this.context.destination);
       streamNode.port.onmessage = (e) => {
-        const { event, data, timestamp_ms } = e.data;
+        const { event, data, underrun, timestamp_ms } = e.data;
         if (event === "audio") {
-          this._audioProcessor(data, timestamp_ms);
+          this._audioProcessor(data, underrun, timestamp_ms);
         } else if (event === "stop") {
           streamNode.disconnect();
           this.stream = null;
