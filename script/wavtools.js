@@ -418,22 +418,22 @@ class StreamProcessor extends AudioWorkletProcessor {
       this.port.postMessage({ event: 'stop' });
       return false;
     } else {
-      let totalSamples = 0;
+      let totalSamples = -this.playbackOutputOffset;
       let samplesRead = 0;
       let samplesMoved = 0;
       let samplesWritten = 0
-
+      let consumeBuffer = false;
+      
       if (outputBuffers.length > 0) {
         const outputChanneDataSampledNeeded = outputChannelData.length;
         const serverSamplesTarget = this.playbackMinBuffers * this.bufferLength;
         
         // determine if we should consume the output buffer(s)
         let consumableSamples = -this.playbackOutputOffset;
-        let shouldConsumeBuffer = false;
         
         if (this.playbackSkipDigitalSilence) {
           // count total buffered after initial non-silence buffer
-          let foundNonSilence = false;
+          let foundNonSilence = this.playbackOutputOffset !== 0;
           for (let i = 0; i < outputBuffers.length; ++i) {
             const { buffer, isSilence } = outputBuffers[i];
 
@@ -447,7 +447,7 @@ class StreamProcessor extends AudioWorkletProcessor {
           }
           
           // consume samples only if we are already in playback or we've buffered enough
-          shouldConsumeBuffer = this.isInPlayback || consumableSamples >= serverSamplesTarget;
+          consumeBuffer = this.isInPlayback || consumableSamples >= serverSamplesTarget;
         } else {
           for (let i = 0; i < outputBuffers.length; ++i) {
             const { buffer } = outputBuffers[i];
@@ -457,10 +457,10 @@ class StreamProcessor extends AudioWorkletProcessor {
           }
           
           // start continuous consumption once initial buffering is met
-          shouldConsumeBuffer = this.hasStarted || consumableSamples >= serverSamplesTarget;
+          consumeBuffer = this.hasStarted || consumableSamples >= serverSamplesTarget;
         }
 
-        if (shouldConsumeBuffer && consumableSamples > 0) {
+        if (consumeBuffer && consumableSamples > 0) {
           // apply playback rate to determine how many samples to consume
           const playbackRateTarget = this.determinePlaybackRate(consumableSamples, serverSamplesTarget);
           this.playbackRate = this.playbackRate * this.playbackSmoothing + playbackRateTarget * (1 - this.playbackSmoothing);
@@ -546,7 +546,7 @@ class StreamProcessor extends AudioWorkletProcessor {
       this.port.postMessage({
         event: 'audio',
         data: samplesMoved,
-        underrun: Math.max(0, outputChannelData.length - totalSamples),
+        underrun: consumeBuffer ? Math.max(0, outputChannelData.length - consumableSamples) : 0,
         timestamp_ms: Date.now(),
       });
 
