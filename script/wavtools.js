@@ -422,14 +422,16 @@ class StreamProcessor extends AudioWorkletProcessor {
       let samplesRead = 0;
       let samplesMoved = 0;
       let samplesWritten = 0
+      
       let consumeBuffer = false;
+      let consumableSamples = 0;
       
       if (outputBuffers.length > 0) {
         const outputChanneDataSampledNeeded = outputChannelData.length;
         const serverSamplesTarget = this.playbackMinBuffers * this.bufferLength;
         
         // determine if we should consume the output buffer(s)
-        let consumableSamples = -this.playbackOutputOffset;
+        consumableSamples -= this.playbackOutputOffset;
         
         if (this.playbackSkipDigitalSilence) {
           // count total buffered after initial non-silence buffer
@@ -546,7 +548,7 @@ class StreamProcessor extends AudioWorkletProcessor {
       this.port.postMessage({
         event: 'audio',
         data: samplesMoved,
-        underrun: consumeBuffer ? Math.max(0, outputChannelData.length - consumableSamples) : 0,
+        underrun: consumeBuffer ? Math.max(0, outputChannelData.length - totalSamples) : 0,
         timestamp_ms: Date.now(),
       });
 
